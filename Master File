@@ -37,7 +37,38 @@ def export_csv(data, filename):
         writer = csv.writer(f)
         for row in data:
             writer.writerow(row)
-
+import serial
+class TimeMachineDevice:
+    def __init__(self, port="COM3", baudrate=9600):
+        self.port = port
+        self.baudrate = baudrate
+        self.conn = None
+    def connect(self):
+        try:
+            self.conn = serial.Serial(self.port, self.baudrate, timeout=2)
+            logger.info(f"Connected to Time Machine on {self.port}")
+            return True
+        except Exception as e:
+            logger.error(f"Connect error: {e}")
+            return False
+    def disconnect(self):
+        if self.conn:
+            self.conn.close()
+            logger.info("Disconnected Time Machine.")
+    def sync(self):
+        # Actual commands per hardware manual
+        self.conn.write(b"SYNC\n")
+        ack = self.conn.readline()
+        logger.info(f"Sync result: {ack}")
+        return ack.strip() == b'OK'
+    def get_times(self):
+        self.conn.write(b"GET_TIMES\n")
+        times = []
+        while True:
+            line = self.conn.readline()
+            if not line or line.strip() == b"END": break
+            times.append(line.decode().strip().split(','))
+        return times
 def export_pdf(data, filename, title="Meet Results"):
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
@@ -69,13 +100,19 @@ class TimeMachineDevice:
         # Return fake times for demo
         return [["Swimmer 1", "24.92"], ["Swimmer 2", "25.36"]]
 class ThermalPrinter:
-    def __init__(self):
-        pass
+    def __init__(self, port="COM4", baudrate=19200):
+        try:
+            self.conn = serial.Serial(port, baudrate, timeout=2)
+            logger.info(f"Printer on {port}.")
+        except Exception as e:
+            logger.error(f"Printer open fail: {e}"); raise
     def print_results(self, results):
-        logger.info("Results sent to printer:")
-        for result in results:
-            logger.info(f"{result}")
-        return True
+        for line in results:
+            txt = f'{line[0]}: {line[1]}s\r\n'.encode('ascii', errors='replace')
+            self.conn.write(txt)
+        self.conn.write(b'\x1dV\x00')  # Cut (if supported)
+    def close(self):
+        if self.conn: self.conn.close()
 
 # --- Worker Threads ---
 class TimingWorker(QThread):
