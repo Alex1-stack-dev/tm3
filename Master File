@@ -1,0 +1,262 @@
+import sys, os, csv, json, logging
+from datetime import datetime
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QLineEdit, QTextEdit, QMessageBox, QProgressBar, QFileDialog, QFormLayout, QCheckBox
+)
+from PyQt6.QtGui import QPixmap, QFont, QColor, QPalette
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+# --- Logger Setup ---
+logging.basicConfig(
+    filename="app.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s]: %(message)s"
+)
+def get_logger(name):
+    return logging.getLogger(name)
+logger = get_logger("SwimMeetManager")
+
+# --- Models ---
+class MeetModel:
+    def __init__(self):
+        self.data = {"name": "", "date": "", "venue": "", "director": ""}
+        self.results = []
+
+    def update(self, data):
+        self.data.update(data)
+        logger.info(f"MeetModel updated: {self.data}")
+
+    def add_result(self, result):
+        self.results.append(result)
+        logger.info(f"Result added: {result}")
+
+# --- Utils ---
+def export_csv(data, filename):
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        for row in data:
+            writer.writerow(row)
+
+def export_pdf(data, filename, title="Meet Results"):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    c = canvas.Canvas(filename, pagesize=letter)
+    width, height = letter
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(70, height - 50, title)
+    c.setFont("Helvetica", 12)
+    y = height - 100
+    for row in data:
+        if y < 50:
+            c.showPage(); y = height - 50
+        line = '  '.join(str(r) for r in row)
+        c.drawString(70, y, line)
+        y -= 18
+    c.save()
+
+# Time Machine + Printer Simulation
+class TimeMachineDevice:
+    def connect(self):
+        logger.info("Time Machine G2 connected.")
+        return True
+    def disconnect(self):
+        logger.info("Time Machine G2 disconnected.")
+    def sync(self):
+        logger.info("Time synchronized.")
+        return True
+    def get_times(self):
+        # Return fake times for demo
+        return [["Swimmer 1", "24.92"], ["Swimmer 2", "25.36"]]
+class ThermalPrinter:
+    def __init__(self):
+        pass
+    def print_results(self, results):
+        logger.info("Results sent to printer:")
+        for result in results:
+            logger.info(f"{result}")
+        return True
+
+# --- Worker Threads ---
+class TimingWorker(QThread):
+    status = pyqtSignal(str)
+    done = pyqtSignal(list)
+    def run(self):
+        self.status.emit("Connecting to Time Machine...")
+        dev = TimeMachineDevice()
+        if not dev.connect():
+            self.status.emit("Connection failed."); return
+        self.status.emit("Syncing times...")
+        dev.sync()
+        results = dev.get_times()
+        dev.disconnect()
+        self.status.emit("Sync done.")
+        self.done.emit(results)
+
+# --- UI Theme/Palette ---
+def themed_palette():
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#E3F6FC"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#FEFEFE"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#0277BD"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#083B66"))
+    return palette
+
+FONT_FAMILY = "Arial Rounded MT Bold, Arial, Helvetica, sans-serif"
+
+# --- Main Window ---
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Swim Meet Manager Professional")
+        self.setGeometry(100, 50, 1300, 850)
+        self.setPalette(themed_palette())
+        self.setFont(QFont(FONT_FAMILY, 12))
+        # Fancy background:
+        self.bg_pixmap = QPixmap(os.path.join(os.path.dirname(__file__), "assets/splash.png"))  # Supply your pool image
+        # Central widget with all tabs
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("QTabWidget::pane { border-top: 2px solid #0277BD; background: #e3f6fc; }")
+        self.model = MeetModel()
+        self.meet_tab = MeetTab(self.model)
+        self.timing_tab = TimingTab(self.model)
+        self.results_tab = ResultsTab(self.model)
+        self.settings_tab = SettingsTab(self.model)
+        self.tabs.addTab(self.meet_tab, "🏊 Meet Info")
+        self.tabs.addTab(self.timing_tab, "⏲ Timing Devices")
+        self.tabs.addTab(self.results_tab, "🏅 Results/Export")
+        self.tabs.addTab(self.settings_tab, "⚙️ Settings & Help")
+        self.setCentralWidget(self.tabs)
+
+    def paintEvent(self, event):
+        if self.bg_pixmap and not self.bg_pixmap.isNull():
+            painter = QPainter(self)
+            painter.drawPixmap(self.rect(), self.bg_pixmap)
+
+# --- Tabs Definitions ---
+class MeetTab(QWidget):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.init_ui()
+    def init_ui(self):
+        layout = QFormLayout()
+        self.name = QLineEdit(); self.name.setToolTip("Meet name (required)")
+        self.date = QLineEdit(); self.date.setToolTip("Date YYYY-MM-DD (required)")
+        self.venue = QLineEdit(); self.venue.setToolTip("Facility/Pool")
+        self.director = QLineEdit(); self.director.setToolTip("Director name")
+        save_btn = QPushButton("Save Info")
+        save_btn.clicked.connect(self.save)
+        for w in [self.name, self.date, self.venue, self.director],: [w.setFont(QFont(FONT_FAMILY, 12)) for w in w]
+        layout.addRow("Name", self.name)
+        layout.addRow("Date", self.date)
+        layout.addRow("Venue", self.venue)
+        layout.addRow("Director", self.director)
+        layout.addRow(save_btn)
+        self.setLayout(layout)
+    def save(self):
+        data = dict(name=self.name.text(), date=self.date.text(), venue=self.venue.text(), director=self.director.text())
+        for k, v in data.items():
+            if k in ("name", "date") and not v:
+                QMessageBox.warning(self, "Missing", f"{k.title()} required."); return
+        self.model.update(data)
+        QMessageBox.information(self, "Saved", "Meet info updated.")
+
+class TimingTab(QWidget):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.init_ui()
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.status = QLabel("Idle"); self.status.setFont(QFont(FONT_FAMILY, 12))
+        self.pb = QProgressBar(); self.pb.setMaximum(0); self.pb.setMinimum(0); self.pb.hide()
+        sync_btn = QPushButton("Sync Time Machine")
+        sync_btn.clicked.connect(self.sync_device)
+        layout.addWidget(self.status)
+        layout.addWidget(self.pb)
+        layout.addWidget(sync_btn)
+        self.setLayout(layout)
+    def sync_device(self):
+        self.pb.show()
+        self.worker = TimingWorker()
+        self.worker.status.connect(self.status.setText)
+        self.worker.done.connect(self.timing_done)
+        self.worker.start()
+    def timing_done(self, result_rows):
+        self.pb.hide()
+        self.model.results = result_rows
+        QMessageBox.information(self, "Times Imported", f"{len(result_rows)} rows imported.")
+
+class ResultsTab(QWidget):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.init_ui()
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.te = QTextEdit(); self.te.setFont(QFont(FONT_FAMILY, 12))
+        add_row = QPushButton("Add Result")
+        add_row.clicked.connect(self.add_result)
+        export_csv_btn = QPushButton("Export CSV")
+        export_csv_btn.clicked.connect(self.do_export_csv)
+        export_pdf_btn = QPushButton("Export PDF")
+        export_pdf_btn.clicked.connect(self.do_export_pdf)
+        print_btn = QPushButton("Print Results")
+        print_btn.clicked.connect(self.do_print)
+        layout.addWidget(self.te); layout.addWidget(add_row)
+        layout.addWidget(export_csv_btn); layout.addWidget(export_pdf_btn); layout.addWidget(print_btn)
+        self.setLayout(layout)
+    def add_result(self):
+        text = self.te.toPlainText().strip()
+        if text: self.model.results = [row.split(',') for row in text.split('\n')]
+        else: self.model.results = []
+        QMessageBox.information(self, "Updated", f"Results updated: {len(self.model.results)} rows.")
+    def do_export_csv(self):
+        fname, _ = QFileDialog.getSaveFileName(self, 'CSV file', filter='CSV files (*.csv)')
+        if fname: export_csv(self.model.results, fname); QMessageBox.information(self, "Exported", f"CSV {fname}")
+    def do_export_pdf(self):
+        fname, _ = QFileDialog.getSaveFileName(self, 'PDF file', filter='PDF files (*.pdf)')
+        if fname: export_pdf(self.model.results, fname); QMessageBox.information(self, "Exported", f"PDF {fname}")
+    def do_print(self):
+        printer = ThermalPrinter()
+        printer.print_results(self.model.results)
+        QMessageBox.information(self, "Print", "Results sent to printer.")
+
+class SettingsTab(QWidget):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.init_ui()
+    def init_ui(self):
+        layout = QVBoxLayout()
+        self.log_box = QCheckBox("Enable debug logging"); self.log_box.setChecked(True)
+        ep_edit = QLineEdit(); ep_edit.setToolTip("Default export dir")
+        save_btn = QPushButton("Save settings")
+        save_btn.clicked.connect(lambda: self.save(os.getenv('SM2_SETTINGS', 'settings.json'), ep_edit.text()))
+        load_btn = QPushButton("Load help/onboarding")
+        load_btn.clicked.connect(self.help_onboarding)
+        layout.addWidget(self.log_box)
+        layout.addWidget(ep_edit)
+        layout.addWidget(save_btn)
+        layout.addWidget(load_btn)
+        self.setLayout(layout)
+    def save(self, fname, path):
+        s = {'debug': self.log_box.isChecked(), 'export_path': path}
+        with open(fname, 'w') as f: json.dump(s, f, indent=2)
+        QMessageBox.information(self, "Saved", f"Settings saved in {fname}")
+    def help_onboarding(self):
+        QMessageBox.information(self, "Onboarding", "Welcome to Swim Meet Manager! See tooltips, documentation, and support tabs for details. Contact admin for troubleshooting.")
+
+# --- Main ---
+def main():
+    app = QApplication(sys.argv)
+    app.setDesktopFileName("SwimMeetManager2")
+    app.setPalette(themed_palette())
+    app.setFont(QFont(FONT_FAMILY, 12))
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec())
+
+if __name__ == '__main__':
+    main()
